@@ -660,23 +660,36 @@ def kml_polygons_from_zip(path_poi_circle: str, wanted_files) -> gpd.GeoDataFram
 
 def build_polygon_circle_gdf(
     path_poi_circle: str,
-    reg_files
+    reg_files,
+    df_reg_filtered: pd.DataFrame
 ) -> gpd.GeoDataFrame:
     """
     Один раз читает архив с KML и строит GeoDataFrame полигонов.
+    Название региона для полигона берется из DICTIONARY по связке
+    FILE_NAME -> EDW.
     """
     gdf_out = kml_polygons_from_zip(path_poi_circle, reg_files)
 
+    columns = ["ID", "MULTIPOLYGON_WKT", "source_file", "REGION_EDW", "geometry"]
     if gdf_out.empty:
-        return gpd.GeoDataFrame(
-            columns=["ID", "MULTIPOLYGON_WKT", "source_file", "geometry"],
-            crs="EPSG:4326"
-        )
+        return gpd.GeoDataFrame(columns=columns, crs="EPSG:4326")
+
+    file_to_region = (
+        df_reg_filtered
+        .dropna(subset=["FILE_NAME", "EDW"])
+        .assign(FILE_BASENAME=lambda df: df["FILE_NAME"].astype(str).map(lambda x: Path(x).name))
+        .drop_duplicates("FILE_BASENAME")
+        .set_index("FILE_BASENAME")["EDW"]
+        .to_dict()
+    )
 
     df_polygon_circle = gdf_out[["ID", "MULTIPOLYGON_WKT", "source_file"]].copy()
+    df_polygon_circle["REGION_EDW"] = df_polygon_circle["source_file"].map(file_to_region).fillna(
+        df_polygon_circle["source_file"].map(lambda x: Path(str(x)).stem)
+    )
     df_polygon_circle["geometry"] = gpd.GeoSeries.from_wkt(df_polygon_circle["MULTIPOLYGON_WKT"])
 
-    return gpd.GeoDataFrame(df_polygon_circle, geometry="geometry", crs="EPSG:4326")
+    return gpd.GeoDataFrame(df_polygon_circle[columns], geometry="geometry", crs="EPSG:4326")
 
 
 def add_polygon_counts_from_gdf(
@@ -708,6 +721,47 @@ def add_polygon_counts_from_gdf(
     return out
 
 
+def add_poi_counts_to_polygons(
+    gdf_polygon_circle: gpd.GeoDataFrame,
+    gdf_poi: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
+    """
+    Для каждого полигона считает количество точек POI внутри него.
+    """
+    out = gdf_polygon_circle.copy()
+
+    if out.empty:
+        out["POI_COUNT"] = 0
+        return out
+
+    if gdf_poi is None or gdf_poi.empty:
+        out["POI_COUNT"] = 0
+        return out
+
+    poi_points = gdf_poi[gdf_poi.geometry.notna()].copy()
+    if poi_points.empty:
+        out["POI_COUNT"] = 0
+        return out
+
+    if poi_points.crs != out.crs:
+        poi_points = poi_points.to_crs(out.crs)
+
+    sindex = poi_points.sindex
+
+    def count_poi_in_polygon(polygon):
+        if polygon is None or polygon.is_empty:
+            return 0
+
+        possible_idx = list(sindex.intersection(polygon.bounds))
+        possible = poi_points.iloc[possible_idx]
+
+        return int(possible["geometry"].apply(polygon.covers).sum())
+
+    out["POI_COUNT"] = out["geometry"].apply(count_poi_in_polygon)
+
+    return out
+
+
 df_pos_msh_msk = df_poi_filtered_msk.merge(df_msh_filtered,left_on='LOCATION_ID',right_on='LOC_ID_4',how='left')
 df_pos_msh_mo = df_poi_filtered_mo.merge(df_msh_filtered,left_on='LOCATION_ID',right_on='LOC_ID_4',how='left')
 
@@ -725,7 +779,8 @@ gdf_msh_poi_pos_mo = build_poi_pos_metrics(
 
 gdf_polygon_circle = build_polygon_circle_gdf(
     path_poi_circle=path_poi_circle,
-    reg_files=df_reg_filtered_file
+    reg_files=df_reg_filtered_file,
+    df_reg_filtered=df_reg_filtered
 )
 
 gdf_msh_poi_pos_msk = add_polygon_counts_from_gdf(
@@ -736,6 +791,11 @@ gdf_msh_poi_pos_msk = add_polygon_counts_from_gdf(
 gdf_msh_poi_pos_mo = add_polygon_counts_from_gdf(
     gdf_poi=gdf_msh_poi_pos_mo,
     gdf_polygon_circle=gdf_polygon_circle
+)
+
+gdf_polygon_circle = add_poi_counts_to_polygons(
+    gdf_polygon_circle=gdf_polygon_circle,
+    gdf_poi=pd.concat([gdf_msh_poi_pos_msk, gdf_msh_poi_pos_mo], axis=0)
 )
 
 # =========================================================
@@ -1184,6 +1244,7 @@ DEFAULT_KML_CONFIG = {
     # ----- Включение слоев -----
     "build_poi_layer": True,
     "build_pos_layer": True,
+    "build_polygon_layer": True,
 
     # ----- Легенда -----
     "add_legend": True,
@@ -1191,6 +1252,7 @@ DEFAULT_KML_CONFIG = {
 
     # ----- Названия папок -----
     "poi_folder_name": "POI",
+    "polygon_folder_name": "Полигоны скопления POI >5",
     "pos_root_folder_name": "POS",
     "pos_sell_folder_name": "Продающие",
     "pos_not_sell_folder_name": "Не продающие",
@@ -1215,6 +1277,7 @@ DEFAULT_KML_CONFIG = {
 
     # ----- Имена объектов в дереве слоев -----
     "poi_name_template": "Poi ID: {OSM_ID}",
+    "polygon_name_template": "{REGION_EDW}",
     "pos_name_template": "Pos ID: {POS_ID}",
 }
 
@@ -1793,6 +1856,68 @@ def build_pos_description(row):
 # =========================================================
 # 5. ПОСТРОЕНИЕ СЛОЕВ
 # =========================================================
+
+
+def build_polygon_description(row):
+    region_name = get_row_value(row, "REGION_EDW")
+    source_file = get_row_value(row, "source_file")
+    poi_count = fmt_int_spaces(get_row_value(row, "POI_COUNT"))
+
+    return (
+        f"<font size='4'><b>Полигон скопления POI &gt;5</b></font><br><br>"
+        f"Регион: <b>{region_name}</b><br>"
+        f"Файл полигона: <b>{source_file}</b><br>"
+        f"Кол-во точек POI в полигоне: <b>{poi_count}</b><br>"
+    )
+
+
+def polygon_outer_coords(geom):
+    return [(float(x), float(y)) for x, y in geom.exterior.coords]
+
+
+def polygon_inner_coords(geom):
+    return [[(float(x), float(y)) for x, y in ring.coords] for ring in geom.interiors]
+
+
+def add_polygon_layer(kml, df_polygons, config):
+    layer_stats = {"exported": 0, "skipped": 0}
+    if df_polygons is None or df_polygons.empty:
+        return layer_stats
+
+    folder = kml.newfolder(name=config["polygon_folder_name"])
+    polygon_style = simplekml.Style()
+    polygon_style.polystyle.color = simplekml.Color.changealphaint(70, simplekml.Color.yellow)
+    polygon_style.linestyle.color = simplekml.Color.rgb(255, 165, 0)
+    polygon_style.linestyle.width = 2
+
+    for _, row in df_polygons.iterrows():
+        try:
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                layer_stats["skipped"] += 1
+                continue
+
+            region_edw = safe_str(get_row_value(row, "REGION_EDW"))
+            polygon_name = config["polygon_name_template"].format(REGION_EDW=region_edw)
+
+            polygons = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
+            for polygon in polygons:
+                placemark = folder.newpolygon(
+                    name=polygon_name,
+                    outerboundaryis=polygon_outer_coords(polygon),
+                    innerboundaryis=polygon_inner_coords(polygon)
+                )
+                placemark.style = polygon_style
+                placemark.description = build_polygon_description(row)
+                layer_stats["exported"] += 1
+
+        except Exception as e:
+            layer_stats["skipped"] += 1
+            logger.warning("Ошибка при обработке полигона ID=%s: %s", row.get('ID', 'UNKNOWN'), e)
+            continue
+
+    return layer_stats
+
 def add_poi_layer(kml, df_poi, config):
     layer_stats = {"exported": 0, "skipped": 0}
     if df_poi is None or df_poi.empty:
@@ -1932,7 +2057,7 @@ def save_kml_or_kmz(kml, output_path, legend_png_path=None):
 # =========================================================
 # 7. ЕДИНАЯ ФУНКЦИЯ ВЫЗОВА
 # =========================================================
-def make_combined_kmz(df_poi=None, df_pos=None, config=None):
+def make_combined_kmz(df_poi=None, df_pos=None, df_polygons=None, config=None):
     """
     Формирует итоговый KML/KMZ.
     Легенда для KMZ создается временно и упаковывается внутрь архива.
@@ -1957,6 +2082,10 @@ def make_combined_kmz(df_poi=None, df_pos=None, config=None):
 
     poi_layer_stats = {"exported": 0, "skipped": 0}
     pos_layer_stats = {"exported": 0, "skipped": 0}
+    polygon_layer_stats = {"exported": 0, "skipped": 0}
+
+    if final_config["build_polygon_layer"]:
+        polygon_layer_stats = add_polygon_layer(kml=kml, df_polygons=df_polygons, config=final_config)
 
     if final_config["build_poi_layer"]:
         poi_layer_stats = add_poi_layer(kml=kml, df_poi=df_poi, config=final_config)
@@ -1986,8 +2115,8 @@ def make_combined_kmz(df_poi=None, df_pos=None, config=None):
             legend_png_path=temp_legend_path
         )
 
-        logger.info("Готово. Файл сохранен: %s (POI=%s, POS=%s, POI пропущено=%s, POS пропущено=%s)", output_path, poi_layer_stats["exported"], pos_layer_stats["exported"], poi_layer_stats["skipped"], pos_layer_stats["skipped"])
-        return output_path, poi_layer_stats, pos_layer_stats
+        logger.info("Готово. Файл сохранен: %s (POI=%s, POS=%s, полигоны=%s, POI пропущено=%s, POS пропущено=%s, полигоны пропущено=%s)", output_path, poi_layer_stats["exported"], pos_layer_stats["exported"], polygon_layer_stats["exported"], poi_layer_stats["skipped"], pos_layer_stats["skipped"], polygon_layer_stats["skipped"])
+        return output_path, poi_layer_stats, pos_layer_stats, polygon_layer_stats
 
     finally:
         if temp_legend_path and os.path.exists(temp_legend_path):
@@ -2003,6 +2132,7 @@ def make_combined_kmz(df_poi=None, df_pos=None, config=None):
 def export_region_kmz_files(
     df_poi,
     df_pos,
+    df_polygons,
     path_oper_mr,
     file_kml_name_out="POI_",
     file_kml_ext=".kmz",
@@ -2044,6 +2174,13 @@ def export_region_kmz_files(
         else:
             df_pos_region = None
 
+        if df_polygons is not None and not df_polygons.empty:
+            df_polygons_region = df_polygons[
+                df_polygons["REGION_EDW"].astype(str).str.strip() == region_name
+            ].copy()
+        else:
+            df_polygons_region = None
+
         region_name_for_file = safe_filename(region_name)
 
         output_path = str(
@@ -2058,9 +2195,10 @@ def export_region_kmz_files(
         region_config["poi_folder_name"] = f"POI - {region_name}"
         region_config["pos_root_folder_name"] = f"POS - {region_name}"
 
-        _, poi_layer_stats, pos_layer_stats = make_combined_kmz(
+        _, poi_layer_stats, pos_layer_stats, _ = make_combined_kmz(
             df_poi=df_poi_region,
             df_pos=df_pos_region,
+            df_polygons=df_polygons_region,
             config=region_config
         )
 
@@ -2077,6 +2215,7 @@ def export_region_kmz_files(
 saved_kmz_files = export_region_kmz_files(
     df_poi=df_msh_poi_pos_rename_kml,
     df_pos=df_pos_filtered,
+    df_polygons=gdf_polygon_circle,
     path_oper_mr=path_oper_mr,
     file_kml_name_out=file_kml_name_out,
     file_kml_ext=file_kml_ext,
