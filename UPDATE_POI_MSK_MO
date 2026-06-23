@@ -1273,6 +1273,12 @@ DEFAULT_KML_CONFIG = {
     # 0 = скрыт при открытии, 1 = виден
     "pos_root_visibility": 0,
 
+    # ----- Стиль полигонов -----
+    "polygon_line_color": "ff0055ff",
+    "polygon_fill_color": "330055ff",
+    "polygon_line_width": 2,
+    "polygon_visibility": 1,
+
     # ----- Имена объектов в дереве слоев -----
     "poi_name_template": "Poi ID: {OSM_ID}",
     "polygon_name_template": "{REGION_EDW}",
@@ -1906,10 +1912,6 @@ def add_polygon_layer(kml, df_polygons, config):
         return layer_stats
 
     folder = kml.newfolder(name=config["polygon_folder_name"])
-    polygon_style = simplekml.Style()
-    polygon_style.polystyle.color = simplekml.Color.changealphaint(70, simplekml.Color.yellow)
-    polygon_style.linestyle.color = simplekml.Color.rgb(255, 165, 0)
-    polygon_style.linestyle.width = 2
 
     for _, row in df_polygons.iterrows():
         try:
@@ -1928,7 +1930,10 @@ def add_polygon_layer(kml, df_polygons, config):
                     outerboundaryis=polygon_outer_coords(polygon),
                     innerboundaryis=polygon_inner_coords(polygon)
                 )
-                placemark.style = polygon_style
+                placemark.visibility = config.get("polygon_visibility", 1)
+                placemark.style.linestyle.color = config["polygon_line_color"]
+                placemark.style.linestyle.width = config["polygon_line_width"]
+                placemark.style.polystyle.color = config["polygon_fill_color"]
                 placemark.description = build_polygon_description(row)
                 layer_stats["exported"] += 1
 
