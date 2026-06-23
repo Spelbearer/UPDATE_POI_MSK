@@ -1380,6 +1380,31 @@ def safe_filename(value):
     return value
 
 
+def safe_folder_name(value, default="UNKNOWN"):
+    """
+    Возвращает безопасное название папки KML для значения справочника.
+
+    Что делает:
+        - если значение пустое/NaN -> default
+        - обрезает пробелы по краям
+        - заменяет запрещенные для KML/XML управляющие символы
+
+    Для чего нужна:
+        Чтобы динамически создавать подпапки каналов продаж внутри POS.
+    """
+    if pd.isna(value):
+        return default
+
+    value = str(value).strip()
+    if not value:
+        return default
+
+    for ch in "\r\n\t":
+        value = value.replace(ch, " ")
+
+    return value
+
+
 def fmt_percent_from_share(v, digits=1):
     """
     Форматирует долю в процент.
@@ -1977,6 +2002,24 @@ def add_pos_layer(kml, df_pos, config):
     folder_not_sell.visibility = config.get("pos_root_visibility", 0)
     folder_not_sell.open = 0
 
+    folders_by_status_and_channel = {
+        True: {},
+        False: {},
+    }
+
+    def get_channel_folder(parent_folder, is_sell, channel_name):
+        """Создает или возвращает подпапку канала продаж внутри продающих/не продающих POS."""
+        clean_name = safe_folder_name(channel_name)
+        channel_folders = folders_by_status_and_channel[is_sell]
+
+        if clean_name not in channel_folders:
+            folder = parent_folder.newfolder(name=clean_name)
+            folder.visibility = config.get("pos_root_visibility", 0)
+            folder.open = 0
+            channel_folders[clean_name] = folder
+
+        return channel_folders[clean_name]
+
     for _, row in df_pos.iterrows():
         try:
             lat = get_row_float(row, "LAT")
@@ -1990,7 +2033,9 @@ def add_pos_layer(kml, df_pos, config):
             flag_gi_90 = get_row_float(row, "FLAG_GI_90")
             is_sell = int(flag_gi_90 or 0) == 1
 
-            target_folder = folder_sell if is_sell else folder_not_sell
+            status_folder = folder_sell if is_sell else folder_not_sell
+            channel_name = get_row_value(row, "SCH_DIC", default="UNKNOWN")
+            target_folder = get_channel_folder(status_folder, is_sell, channel_name)
 
             point_name = config["pos_name_template"].format(POS_ID=pos_id)
 
