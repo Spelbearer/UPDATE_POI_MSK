@@ -118,14 +118,10 @@ REQUIRED_INPUT_COLUMNS = {
         "REPORT_DATE", "LEVEL_MSK", "LOC_ID_4",
         "HOME_SUBS_LOC_4", "WORK_SUBS_LOC_4", "ENTRTAIN_SUBS_LOC_4",
         "SUBS_CNT_PREV_LOC_4", "MSH_HOME_LOC_4", "MSH_WORK_LOC_4",
-        "MSH_EXTRAIN_LOC_4", "MARKET_SHARE_LOC_4",
-        "MGF_MSH", "BIL_MSH", "T2_MSH", "OTH_MSH", "MTS_MSH",
-        "MGF_MSH_NEIB", "BIL_MSH_NEIB", "T2_MSH_NEIB",
-        "OTH_MSH_NEIB", "MTS_MSH_NEIB",
         "ADMIN_REGION_NAME", "ADMIN_REGION_ID", "MARKET_SUBS_ADM",
         "MSH_HOME_ADM", "HOME_SUBS_ADM", "MSH_WORK_ADM",
         "WORK_SUBS_ADM", "MSH_EXTRAIN_ADM", "ENTRTAIN_SUBS_ADM",
-        "SUBS_CNT_PREV_ADM", "MARKET_SHARE_PREV_ADM",
+        "SUBS_CNT_PREV_ADM", "MARKET_SHARE_PREV_ADM","MSH_EXTRAIN_LOC_4", "MARKET_SHARE_LOC_4",
     ],
     "POS.txt": [
         "POS_ID", "REPORT_MONTH", "POS_STATUS_ID", "REGION_NAME",
@@ -141,7 +137,9 @@ REQUIRED_INPUT_COLUMNS = {
         "BEELINE_SCORING_QUAL", "DEEP_INDOOR", "IN_CAR", "INDOOR", "OUTDOOR",
         "MACROREGION_NAME", "REGION_NAME_EDW", "ADMIN_REGION_NAME",
         "ADMIN_REGION_ID", "TILE_ID", "NEIGHBOR_TILE_IDS",
-        "MAX_DATE_POTENCIAL",
+        "MAX_DATE_POTENCIAL","MGF_MSH", "BIL_MSH", "T2_MSH", "OTH_MSH", "MTS_MSH",
+        "MGF_MSH_NEIB", "BIL_MSH_NEIB", "T2_MSH_NEIB",
+        "OTH_MSH_NEIB", "MTS_MSH_NEIB",
     ],
     "DICTIONARY.xlsx": [
         "MACROREGION_ID", "FLAG", "EDW", "FILE_NAME",
@@ -1885,14 +1883,12 @@ def build_pos_description(row):
 
 def build_polygon_description(row):
     region_name = get_row_value(row, "REGION_EDW")
-    source_file = get_row_value(row, "source_file")
     poi_count = fmt_int_spaces(get_row_value(row, "POI_COUNT"))
 
     return (
         f"<font size='4'><b>Полигон скопления POI &gt;5</b></font><br><br>"
         f"Регион: <b>{region_name}</b><br>"
-        f"Файл полигона: <b>{source_file}</b><br>"
-        f"Кол-во точек POI в полигоне: <b>{poi_count}</b><br>"
+        f"Количество POI в полигоне: <b>{poi_count}</b><br>"
     )
 
 
