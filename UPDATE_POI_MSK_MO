@@ -975,6 +975,31 @@ def fill_zero_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def add_poi_category_ru(
+    df: pd.DataFrame,
+    df_cat: pd.DataFrame,
+    tag_col: str = "TAG",
+    output_col: str = "Категория RU"
+) -> pd.DataFrame:
+    """
+    Добавляет русское название категории POI по справочнику category_en -> category_ru.
+
+    Колонка используется и в Excel-выгрузке, и в KML/KMZ, чтобы категория
+    отображалась в описании точки и была доступна для группировки по папкам.
+    """
+    out = df.copy()
+
+    if tag_col not in out.columns:
+        out[output_col] = "Неизвестная категория"
+        return out
+
+    category_map = df_cat.dropna(subset=["category_en"]).set_index("category_en")["category_ru"]
+    out[output_col] = out[tag_col].map(category_map)
+    out[output_col] = out[output_col].fillna("Неизвестная категория")
+
+    return out
+
+
 def build_excel_dataset(
     gdf_poi: gpd.GeoDataFrame,
     df_cat: pd.DataFrame
@@ -986,10 +1011,7 @@ def build_excel_dataset(
     - добавляет флаги и производные признаки
     - удаляет ненужные колонки
     """
-    df = gdf_poi.copy()
-
-    df["Категория RU"] = df["TAG"].map(df_cat.set_index("category_en")["category_ru"])
-    df["Категория RU"] = df["Категория RU"].fillna("Неизвестная категория")
+    df = add_poi_category_ru(gdf_poi, df_cat)
 
     numeric_columns = [
         "HOME_SUBS_LOC_4",
@@ -1233,6 +1255,7 @@ output_path_poi, output_path_pos, output_path_poi_pos_excel = export_txt_and_ref
 
 df_msh_poi_pos_rename_kml = pd.concat([gdf_msh_poi_pos_msk, gdf_msh_poi_pos_mo], axis=0)
 df_msh_poi_pos_rename_kml = add_region_msk_column(df_msh_poi_pos_rename_kml)
+df_msh_poi_pos_rename_kml = add_poi_category_ru(df_msh_poi_pos_rename_kml, df_cat)
 
 # =========================================================
 # 1. БЛОК НАСТРОЕК
@@ -1716,7 +1739,7 @@ def build_poi_description(row):
     address = get_row_value(row, "ADDRESS")
     lat = get_row_value(row, "LAT")
     lon = get_row_value(row, "LON")
-    tag = get_row_value(row, "Категория RU")
+    tag = get_row_value(row, "Категория RU") or get_row_value(row, "TAG")
     name_tag = get_row_value(row, "POINT_NAME")
     date_add = safe_date(get_row_value(row, "DATE_ADD"))
     poi_in_circle = get_row_value(row, "polygon_count")
@@ -1950,6 +1973,19 @@ def add_poi_layer(kml, df_poi, config):
         return layer_stats
 
     folder = kml.newfolder(name=config["poi_folder_name"])
+    folder.open = 0
+    category_folders = {}
+
+    def get_category_folder(category_name):
+        """Создает или возвращает подпапку категории POI внутри корневой папки POI."""
+        clean_name = safe_folder_name(category_name, default="Неизвестная категория")
+
+        if clean_name not in category_folders:
+            category_folder = folder.newfolder(name=clean_name)
+            category_folder.open = 0
+            category_folders[clean_name] = category_folder
+
+        return category_folders[clean_name]
 
     for _, row in df_poi.iterrows():
         try:
@@ -1963,7 +1999,10 @@ def add_poi_layer(kml, df_poi, config):
             osm_id = safe_str(get_row_value(row, "OSM_ID"))
             point_name = config["poi_name_template"].format(OSM_ID=osm_id)
 
-            point = folder.newpoint(
+            category_name = get_row_value(row, "Категория RU") or get_row_value(row, "TAG")
+            target_folder = get_category_folder(category_name)
+
+            point = target_folder.newpoint(
                 name=point_name,
                 coords=[(float(lon), float(lat))]
             )
